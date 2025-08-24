@@ -242,9 +242,7 @@ export default function CsvSplitterComponent() {
 
         {status && <div className="mt-4 text-sm p-3 bg-white border rounded-xl">{status}</div>}
 
-        <footer className="text-xs text-gray-500 mt-6">
-          <p>All processing is local to the browser—no data leaves your computer.</p>
-        </footer>
+ 
       </div>
     </div>
   );
