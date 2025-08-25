@@ -11,28 +11,25 @@ import toast from 'react-hot-toast';
 type SplitPart = {
   name: string;
   blob: Blob;
-  url: string;        // object URL for individual download/preview
-  rowCount: number;   // excluding header
-  email?: string;     // input field model
-  sending?: boolean;  // send state
-  sentOk?: boolean;   // sent result
+  url: string;
+  rowCount: number;
+  email?: string;
+  sending?: boolean;
+  sentOk?: boolean;
   error?: string | null;
 };
 
 export default function CsvSplitterComponent() {
-  // inputs / options
   const [file, setFile] = useState<File | null>(null);
   const [agents, setAgents] = useState<string>('2');
   const [status, setStatus] = useState<string>('');
   const [delimiter, setDelimiter] = useState<string>(',');
   const [includeBOM, setIncludeBOM] = useState<boolean>(true);
   const [shuffleRows, setShuffleRows] = useState<boolean>(false);
+  const [lastSmaller, setLastSmaller] = useState<boolean>(true); // NEW option
 
-  // info
   const [rowsCount, setRowsCount] = useState<number | null>(null);
   const [headerPreview, setHeaderPreview] = useState<string[][] | null>(null);
-
-  // NEW: hold split parts for per-file view/download/email
   const [parts, setParts] = useState<SplitPart[]>([]);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -43,10 +40,10 @@ export default function CsvSplitterComponent() {
     return dot === -1 ? file.name : file.name.slice(0, dot);
   }, [file]);
 
-  // cleanup object URLs on unmount/reset
+  // cleanup URLs
   useEffect(() => {
     return () => {
-      parts.forEach(p => URL.revokeObjectURL(p.url));
+      parts.forEach((p) => URL.revokeObjectURL(p.url));
     };
   }, [parts]);
 
@@ -56,9 +53,8 @@ export default function CsvSplitterComponent() {
     setRowsCount(null);
     setHeaderPreview(null);
     setStatus('');
-    // clear old parts + URLs
-    setParts(prev => {
-      prev.forEach(p => URL.revokeObjectURL(p.url));
+    setParts((prev) => {
+      prev.forEach((p) => URL.revokeObjectURL(p.url));
       return [];
     });
   }, []);
@@ -69,9 +65,8 @@ export default function CsvSplitterComponent() {
     if (f) {
       setFile(f);
       if (inputRef.current) inputRef.current.files = e.dataTransfer.files as any;
-      // clear old parts + URLs
-      setParts(prev => {
-        prev.forEach(p => URL.revokeObjectURL(p.url));
+      setParts((prev) => {
+        prev.forEach((p) => URL.revokeObjectURL(p.url));
         return [];
       });
       setRowsCount(null);
@@ -119,15 +114,32 @@ export default function CsvSplitterComponent() {
       }
       rows = copy;
     }
+
+    const chunks: string[][][] = [];
     const size = Math.floor(rows.length / parts);
     const remainder = rows.length % parts;
-    const chunks: string[][][] = [];
-    let start = 0;
-    for (let p = 0; p < parts; p++) {
-      const extra = p < remainder ? 1 : 0;
-      const end = start + size + extra;
-      chunks.push(rows.slice(start, end));
-      start = end;
+
+    if (remainder === 0 || !lastSmaller) {
+      // Standard: distribute remainder across early files
+      let start = 0;
+      for (let p = 0; p < parts; p++) {
+        const extra = p < remainder ? 1 : 0;
+        const end = start + size + extra;
+        chunks.push(rows.slice(start, end));
+        start = end;
+      }
+    } else {
+      // Custom: all but last equal, last gets leftover (smaller)
+      let start = 0;
+      for (let p = 0; p < parts; p++) {
+        if (p === parts - 1) {
+          chunks.push(rows.slice(start));
+        } else {
+          const end = start + size;
+          chunks.push(rows.slice(start, end));
+          start = end;
+        }
+      }
     }
     return chunks;
   };
@@ -139,7 +151,6 @@ export default function CsvSplitterComponent() {
       : new Blob([csv], { type: 'text/csv;charset=utf-8' });
   };
 
-  // UPDATED: split but DON'T immediately zip; show parts first
   const handleSplit = useCallback(async () => {
     try {
       if (!file) throw new Error('Please choose a CSV file.');
@@ -157,25 +168,23 @@ export default function CsvSplitterComponent() {
         return { name, blob, url, rowCount: chunk.length, email: '' };
       });
 
-      // cleanup old URLs then set
-      setParts(prev => {
-        prev.forEach(p => URL.revokeObjectURL(p.url));
+      setParts((prev) => {
+        prev.forEach((p) => URL.revokeObjectURL(p.url));
         return newParts;
       });
 
-      setStatus('Done! Files are ready below. You can download individually, send via email, or download all as ZIP.');
+      setStatus('Done! Files ready below.');
     } catch (err: any) {
       console.error(err);
       setStatus(err.message || String(err));
     }
-  }, [file, agents, baseName, parseCsv, includeBOM, delimiter]);
+  }, [file, agents, baseName, parseCsv, includeBOM, delimiter, lastSmaller, shuffleRows]);
 
-  // NEW: Download all as ZIP (same as before)
   const handleDownloadAll = useCallback(async () => {
     if (parts.length === 0) return;
     setStatus('Packaging ZIP…');
     const zip = new JSZip();
-    parts.forEach(p => zip.file(p.name, p.blob));
+    parts.forEach((p) => zip.file(p.name, p.blob));
     const zipBlob = await zip.generateAsync({
       type: 'blob',
       compression: 'DEFLATE',
@@ -185,7 +194,6 @@ export default function CsvSplitterComponent() {
     setStatus('ZIP downloaded.');
   }, [parts, baseName]);
 
-  // NEW: send a single split file via backend (Brevo) API route
   const sendPart = useCallback(
     async (index: number) => {
       const part = parts[index];
@@ -193,11 +201,11 @@ export default function CsvSplitterComponent() {
 
       const email = (part.email || '').trim();
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-        setParts(ps => ps.map((p, i) => (i === index ? { ...p, error: 'Enter a valid email address.' } : p)));
+        setParts((ps) => ps.map((p, i) => (i === index ? { ...p, error: 'Enter a valid email address.' } : p)));
         return;
       }
 
-      setParts(ps => ps.map((p, i) => (i === index ? { ...p, sending: true, sentOk: false, error: null } : p)));
+      setParts((ps) => ps.map((p, i) => (i === index ? { ...p, sending: true, sentOk: false, error: null } : p)));
 
       try {
         const fd = new FormData();
@@ -205,21 +213,19 @@ export default function CsvSplitterComponent() {
         fd.append('filename', part.name);
         fd.append('file', part.blob, part.name);
 
-        // NOTE: implement a Next.js route at /api/send-split that uses Brevo to email the attachment.
         const res = await fetch('/api/send-split', { method: 'POST', body: fd });
         if (!res.ok) {
           const msg = await res.text();
           throw new Error(msg || 'Failed to send email');
         }
-        else{
-          toast.success(`File ${part.name} sent to ${email}`);
-        }
 
-        setParts(ps => ps.map((p, i) => (i === index ? { ...p, sending: false, sentOk: true } : p)));
+        setParts((ps) => ps.map((p, i) => (i === index ? { ...p, sending: false, sentOk: true } : p)));
+        toast.success(`File ${part.name} sent to ${email}`);
       } catch (e: any) {
-        setParts(ps =>
+        setParts((ps) =>
           ps.map((p, i) => (i === index ? { ...p, sending: false, sentOk: false, error: e?.message || 'Error' } : p)),
         );
+        toast.error(`Failed to send ${part.name}: ${e?.message || 'Error'}`);
       }
     },
     [parts],
@@ -230,8 +236,8 @@ export default function CsvSplitterComponent() {
     setRowsCount(null);
     setHeaderPreview(null);
     setStatus('');
-    setParts(prev => {
-      prev.forEach(p => URL.revokeObjectURL(p.url));
+    setParts((prev) => {
+      prev.forEach((p) => URL.revokeObjectURL(p.url));
       return [];
     });
     if (inputRef.current) inputRef.current.value = '';
@@ -242,10 +248,10 @@ export default function CsvSplitterComponent() {
       <div className="max-w-4xl mx-auto">
         <h1 className="text-2xl md:text-3xl font-bold mb-2">CSV Splitter</h1>
         <p className="text-sm text-gray-600 mb-6">
-          Upload a CSV, enter the number of agents, and split it. You can download each file separately, download a ZIP,
-          or email a file to an agent. All parsing is done <span className="font-semibold">in your browser</span>.
+          Upload a CSV, split evenly, download per file or ZIP, or email directly. All parsing is in your browser.
         </p>
 
+        {/* Upload */}
         <div
           onDrop={handleDrop}
           onDragOver={prevent}
@@ -256,11 +262,11 @@ export default function CsvSplitterComponent() {
             CSV file
           </label>
           <input ref={inputRef} id="csv" type="file" accept=".csv,text/csv" onChange={onFileChange} className="w-full" />
-          <p className="text-xs text-gray-500 mt-2">Tip: Drag & drop works too.</p>
         </div>
 
+        {/* Options */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
-          <div className="sm:col-span-1">
+          <div>
             <label className="block text-sm font-medium mb-2">Number of agents</label>
             <input
               type="number"
@@ -272,7 +278,7 @@ export default function CsvSplitterComponent() {
           </div>
           <div className="sm:col-span-2">
             <label className="block text-sm font-medium mb-2">Options</label>
-            <div className="flex flex-wrap gap-4 text-sm">
+            <div className="flex flex-col gap-2 text-sm">
               <label className="inline-flex items-center gap-2">
                 <input type="checkbox" checked={includeBOM} onChange={(e) => setIncludeBOM(e.target.checked)} />
                 Add UTF-8 BOM (Excel-friendly)
@@ -281,131 +287,94 @@ export default function CsvSplitterComponent() {
                 <input type="checkbox" checked={shuffleRows} onChange={(e) => setShuffleRows(e.target.checked)} />
                 Shuffle rows before splitting
               </label>
+              <label className="inline-flex items-center gap-2">
+                <input type="checkbox" checked={lastSmaller} onChange={(e) => setLastSmaller(e.target.checked)} />
+                Keep last file smaller if not divisible evenly
+              </label>
             </div>
           </div>
         </div>
 
-        {rowsCount !== null && (
-          <div className="mb-4 text-sm bg-white rounded-xl border p-3">
-            <div>
-              <span className="font-semibold">Detected delimiter:</span> <code>{delimiter}</code>
-            </div>
-            <div>
-              <span className="font-semibold">Records (excluding header):</span> {rowsCount}
-            </div>
-            {headerPreview && (
-              <details className="mt-2">
-                <summary className="cursor-pointer">Preview header & first row</summary>
-                <div className="overflow-auto mt-2">
-                  <table className="min-w-full text-xs">
-                    <thead>
-                      <tr>
-                        {headerPreview[0].map((h, i) => (
-                          <th key={i} className="border px-2 py-1 bg-gray-50 text-left">
-                            {h}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        {headerPreview[1].map((c, i) => (
-                          <td key={i} className="border px-2 py-1">
-                            {c}
-                          </td>
-                        ))}
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </details>
-            )}
-          </div>
-        )}
-
+        {/* Buttons */}
         <div className="flex gap-3 mb-4">
           <button
             onClick={handleSplit}
-            className="rounded-2xl cursor-pointer px-4 py-2 bg-black transition text-white font-medium hover:opacity-90"
+            className="rounded-2xl px-4 py-2 bg-black text-white font-medium hover:opacity-90"
             disabled={!file}
-            aria-disabled={!file}
           >
             Split
           </button>
-
           <button
             onClick={handleDownloadAll}
-            className="rounded-2xl cursor-pointer px-4 py-2 border hover:bg-gray-100 disabled:opacity-50"
+            className="rounded-2xl px-4 py-2 border hover:bg-gray-100 disabled:opacity-50"
             disabled={parts.length === 0}
           >
             Download All (ZIP)
           </button>
-
           <button
             onClick={resetAll}
-            className="rounded-2xl cursor-pointer px-4 py-2 border hover:bg-black hover:text-white transition"
+            className="rounded-2xl px-4 py-2 border hover:bg-black hover:text-white transition"
           >
             Reset
           </button>
         </div>
 
-        {/* NEW: parts table/list with per-file download & email */}
+        {/* Files table */}
         {parts.length > 0 && (
           <div className="bg-white border rounded-2xl p-4">
             <h2 className="font-semibold mb-3">Split Files</h2>
-            <div className="overflow-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50">
-                    <th className="text-left px-3 py-2 border">File</th>
-                    <th className="text-left px-3 py-2 border">Rows</th>
-                    <th className="text-left px-3 py-2 border">Download</th>
-                    <th className="text-left px-3 py-2 border">Email to</th>
-                    <th className="text-left px-3 py-2 border">Action</th>
+            <table className="min-w-full text-sm border">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="text-left px-3 py-2 border">File</th>
+                  <th className="text-left px-3 py-2 border">Rows</th>
+                  <th className="text-left px-3 py-2 border">Download</th>
+                  <th className="text-left px-3 py-2 border">Email</th>
+                  <th className="text-left px-3 py-2 border">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {parts.map((p, idx) => (
+                  <tr key={p.name}>
+                    <td className="px-3 py-2 border">{p.name}</td>
+                    <td className="px-3 py-2 border">{p.rowCount}</td>
+                    <td className="px-3 py-2 border">
+                      <a
+                        href={p.url}
+                        download={p.name}
+                        className="px-3 py-1 rounded border hover:text-white cursor-pointer hover:bg-black transition-all ease-in-out inline-block"
+                      >
+                        Download
+                      </a>
+                    </td>
+                    <td className="px-3 py-2 border">
+                      <input
+                        type="email"
+                        value={p.email ?? ''}
+                        placeholder="agent@example.com"
+                        onChange={(e) =>
+                          setParts((ps) =>
+                            ps.map((x, i) => (i === idx ? { ...x, email: e.target.value, error: null } : x)),
+                          )
+                        }
+                        className="border rounded p-1 w-56"
+                      />
+                      {p.error && <div className="text-xs text-red-600">{p.error}</div>}
+                      {p.sentOk && <div className="text-xs text-green-600">Sent!</div>}
+                    </td>
+                    <td className="px-3 py-2 border">
+                      <button
+                        onClick={() => sendPart(idx)}
+                        disabled={p.sending || p.sentOk}
+                        className="px-3 py-1 rounded cursor-pointer w-[5rem] bg-black text-white hover:opacity-90 disabled:opacity-50"
+                      >
+                        {p.sending ? 'Sending…' : p.sentOk ? 'Sent' : 'Send'}
+                      </button>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {parts.map((p, idx) => (
-                    <tr key={p.name}>
-                      <td className="px-3 py-2 border">{p.name}</td>
-                      <td className="px-3 py-2 border">{p.rowCount}</td>
-                      <td className="px-3 py-2 border">
-                        <a
-                          href={p.url}
-                          download={p.name}
-                          className="inline-block px-2 py-1 rounded-lg border hover:bg-black hover:text-white transition-all ease-in-out"
-                        >
-                          Download
-                        </a>
-                      </td>
-                      <td className="px-3 py-2 border">
-                        <input
-                          type="email"
-                          placeholder="agent@example.com"
-                          value={p.email ?? ''}
-                          onChange={(e) =>
-                            setParts(ps => ps.map((x, i) => (i === idx ? { ...x, email: e.target.value, error: null } : x)))
-                          }
-                          className="rounded-lg border p-2 w-64 max-w-full"
-                        />
-                        {p.error && <div className="text-xs text-red-600 mt-1">{p.error}</div>}
-                        {p.sentOk && <div className="text-md text-green-700 font-medium mt-1">File has been Sent!</div>}
-                      </td>
-                      <td className="px-3 py-2 border">
-                        <button
-                          onClick={() => sendPart(idx)}
-                          disabled={p.sending}
-                          className="px-3 py-1 w-[6rem] cursor-pointer rounded-lg bg-black text-white hover:opacity-50 ease-in-out transition-all disabled:opacity-50"
-                        >
-                          {p.sending ? 'Sending…' : 'Send'}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 
